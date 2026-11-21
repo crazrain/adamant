@@ -1,0 +1,197 @@
+--- a/tests/platform/direct_file_async.cpp
++++ b/tests/platform/direct_file_async.cpp
+@@ -226,6 +226,52 @@
+ 
+ #if defined(_WIN32)
+ // ----------------------------------------------------------------------------------- Windows stress tests
++
++/// The same descriptor serves concurrent positional reads without mixing offsets, including a short final sector.
++static void test_unbuffered_descriptor() {
++    namespace fp = basalt::platform;
++    const size_t page = 4096, pages = 64;
++    Fixture fx((unsigned) pages, 'x');
++    std::string expected(page * pages + 17, 'z');
++    for (size_t i = 0; i < pages; ++i)
++        std::memset(expected.data() + i * page, (int) (i + 1), page);
++    {
++        std::ofstream f(fx.name, std::ios::binary | std::ios::trunc);
++        f.write(expected.data(), (std::streamsize) expected.size());
++        check((bool) f, "write positional fixture");
++    }
++    for (bool by_path : {false, true}) {
++        const int cached = fp::open_fd_utf8(fx.name);
++        check(cached >= 0, "open cached descriptor");
++        const int fd = by_path ? fp::open_unbuffered(fx.name) : fp::open_unbuffered(cached);
++        fp::close_fd(cached);
++        check(fd >= 0, "open unbuffered descriptor");
++        struct Close { int fd; ~Close() { fp::close_fd(fd); } } close{fd};
++        std::atomic<bool> correct{true};
++        std::vector<std::thread> readers;
++        for (size_t w = 0; w < 8; ++w) readers.emplace_back([&, w] {
++            for (int rep = 0; rep < 20; ++rep)
++                for (size_t i = w; i < pages; i += 8) {
++                    char* dst = fx.at(i);
++                    if (fp::pread(fd, dst, page, i * page) != (int64_t) page ||
++                        std::memcmp(dst, expected.data() + i * page, page) != 0) correct.store(false);
++                }
++        });
++        for (auto& r : readers) r.join();
++        check(correct.load(), "concurrent positional read bytes differ");
++        check(fp::pread(fd, fx.at(pages), page, pages * page) == 17, "short final sector");
++        check(std::memcmp(fx.at(pages), expected.data() + pages * page, 17) == 0, "short sector data");
++        check(fp::pread(fd, fx.at(pages + 1), page, (pages + 1) * page) == 0, "read beyond EOF");
++        check(fp::pread(fd, fx.memory, page, 1) == -1, "unaligned direct offset accepted");
++        check(fp::pread(fd, fx.memory, 1, 0) == -1, "unaligned direct size accepted");
++    }
++    const int cached = fp::open_fd_utf8(fx.name);
++    check(cached >= 0, "reopen cached descriptor");
++    char byte = 0;
++    const int64_t got = fp::pread(cached, &byte, 1, page + 1);
++    fp::close_fd(cached);
++    check(got == 1 && byte == expected[page + 1], "reused descriptor kept direct mode");
++}
+ /// `close` must not return while a read can still write: a caller that abandons a prefill releases its buffers as
+ /// soon as close returns. No read here is ever waited on, so all of them are still queued or in flight when close
+ /// runs.
+@@ -370,6 +416,7 @@
+         test_bounded_opens();
+         test_mapped_elsewhere();
+ #if defined(_WIN32)
++        test_unbuffered_descriptor();
+         test_close_with_reads_in_flight();
+         const unsigned maxes[] = {1u, 2u, 3u, 7u, 17u};   // one slot and a batch across the boundary
+         for (unsigned max : maxes) test_wait_bounds_and_wakes(max);
+--- a/src/platform/file.cpp
++++ b/src/platform/file.cpp
+@@ -8,8 +8,10 @@
+ #include <chrono>
+ #include <cstdint>
+ #include <filesystem>
++#include <mutex>
+ #include <string>
+ #include <system_error>
++#include <unordered_set>
+ 
+ #if defined(_WIN32)
+ #include "basalt/platform/win.hpp"
+@@ -68,6 +70,19 @@
+     return s;
+ }
+ 
++std::mutex direct_mu;
++std::unordered_set<int> direct_fds;
++
++/// The CRT owns the handle once it has a descriptor. Reads on these handles each use their own event and offset.
++int direct_descriptor(HANDLE h) {
++    if (h == INVALID_HANDLE_VALUE) return -1;
++    const int fd = _open_osfhandle(reinterpret_cast<intptr_t>(h), _O_RDONLY | _O_BINARY);
++    if (fd < 0) { CloseHandle(h); return -1; }
++    std::lock_guard<std::mutex> lock(direct_mu);
++    direct_fds.insert(fd);
++    return fd;
++}
++
+ /// This thread's handle for reading `fd`, valid until the read that asked for it is done. A handle opened without
+ /// FILE_FLAG_OVERLAPPED serializes the I/O issued through it, so threads reading through one shared descriptor would
+ /// take turns: each read opens the same file again and gets a file object of its own. The handle is not kept - a
+@@ -94,7 +109,12 @@
+ }
+ 
+ void close_fd(int fd) {
+-    if (fd >= 0) _close(fd);
++    if (fd < 0) return;
++    {
++        std::lock_guard<std::mutex> lock(direct_mu);
++        direct_fds.erase(fd);
++    }
++    _close(fd);
+ }
+ 
+ bool absolute_path(const std::string& path, std::string& out) {
+@@ -138,13 +158,29 @@
+ 
+ int64_t pread(int fd, void* dst, size_t n, uint64_t off) {
+     if (fd < 0) return -1;   // asking the CRT for a negative descriptor's handle stops the process here
++    bool direct = false;
++    {
++        std::lock_guard<std::mutex> lock(direct_mu);
++        direct = direct_fds.count(fd) != 0;
++    }
+     const HANDLE shared = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
+-    const HANDLE h = read_handle(shared);
++    const HANDLE h = direct ? shared : read_handle(shared);
+     if (h == INVALID_HANDLE_VALUE) return -1;
+     const DWORD want = (DWORD) (n < (size_t) (1ull << 30) ? n : (size_t) (1ull << 30));
+     OVERLAPPED ov{};
+     ov.Offset = (DWORD) (off & 0xFFFFFFFFull);
+     ov.OffsetHigh = (DWORD) (off >> 32);
++    if (direct) {
++        ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
++        if (ov.hEvent == nullptr) return -1;
++    }
++    struct Close {
++        HANDLE own, event;
++        ~Close() {
++            if (event != nullptr) CloseHandle(event);
++            if (own != INVALID_HANDLE_VALUE) CloseHandle(own);
++        }
++    } close{h != shared ? h : INVALID_HANDLE_VALUE, ov.hEvent};
+     DWORD got = 0;
+     if (!ReadFile(h, dst, want, &got, &ov)) {
+         // A read that ran into the end of the file reports the bytes it did get as an error, so `got` stands.
+@@ -153,16 +189,11 @@
+         const DWORD e = GetLastError();
+         if (e == ERROR_IO_PENDING) {
+             got = 0;
+-            if (!GetOverlappedResult(h, &ov, &got, TRUE) && GetLastError() != ERROR_HANDLE_EOF) {
+-                if (h != shared) CloseHandle(h);
+-                return -1;
+-            }
++            if (!GetOverlappedResult(h, &ov, &got, TRUE) && GetLastError() != ERROR_HANDLE_EOF) return -1;
+         } else if (e != ERROR_HANDLE_EOF) {
+-            if (h != shared) CloseHandle(h);
+             return -1;
+         }
+     }
+-    if (h != shared) CloseHandle(h);   // the read is done: the file is no longer this call's to hold open
+     return (int64_t) got;
+ }
+ 
+@@ -192,19 +223,16 @@
+ }
+ 
+ int open_unbuffered(int fd) {
+-    // No unbuffered descriptor on this platform. A handle that bypasses the cache is opened by path with
+-    // FILE_FLAG_NO_BUFFERING, and every read through it has to line up with the volume's sector size; what this call
+-    // is given is a descriptor, and a name is not recoverable from it. The caller that gets -1 reads the same bytes
+-    // through its mapping, which is the file cache doing the copy the unbuffered read would have saved.
+-    (void) fd;
+-    return -1;
++    if (fd < 0) return -1;
++    const HANDLE original = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
++    return direct_descriptor(ReOpenFile(original, GENERIC_READ,
++        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED));
+ }
+ 
+ int open_unbuffered(const std::string& path) {
+-    // The same answer for the path form: those ranges are read through the file cache here, so a caller that gets -1
+-    // opens the file ordinarily and the bytes arrive by the cached route.
+-    (void) path;
+-    return -1;
++    return direct_descriptor(CreateFileW(to_wide_path(path).c_str(), GENERIC_READ,
++        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
++        FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED, nullptr));
+ }
+ 
+ int open_write_utf8(const std::string& path) {
+--- a/include/basalt/platform/file.hpp
++++ b/include/basalt/platform/file.hpp
+@@ -76,7 +76,7 @@
+ /// duration of it: a handle opened without overlapped I/O serializes the reads issued through it, so threads sharing
+ /// one descriptor would take turns, and a handle the call kept would keep the file open after its descriptor was
+ /// closed. When the file cannot be reopened the shared descriptor is used, which still reads correctly, only in
+-/// turn.
++/// turn. Unbuffered descriptors instead share an overlapped handle, with an event and absolute offset per read.
+ /// A descriptor this process has already closed is not a value to hand here: finding a descriptor's handle is what
+ /// Windows does first, and the CRT stops the process for a number it knows is closed. `fd` < 0 says -1 instead.
+ /// `dst` has to hold everything `n` asks for: on Windows that is up to the 1 GiB the cap gives, so a caller asking

@@ -17,3 +17,4 @@ __pycache__/
 /tmp/
 /.ccache/
 .DS_Store
+/.chatgpt-bridge/
