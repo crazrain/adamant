@@ -40,3 +40,22 @@ IQ3_XXS prefill 4k run1(2,523)은 서버 재시작 직후 콜드; 2·3런(2,913/
 2. 판정은 `/metrics` 서버 레코드. 클라이언트 시간은 wall 참고용. 레코드는 스트림 종료 후 0.5~수 초 뒤에 도착 — id+크기로 매칭하고 `reused: 0`, `finish: length`, `reasoning_tokens: 0`을 확인.
 3. 매 케이스 `Benchmark case {nonce}.` 접두사 + 고정 코퍼스로 캐시 무효화. 코퍼스 길이가 타겟 토큰 수를 커버하는지 assert (`4.0 chars/token` 근사, 32k ≈ 117,400자).
 4. 워밍업 요청 1회 후 측정. 동시 트래픽이 있으면(10만t급 에이전트 요청 관측됨) 서버 지표는 유지되지만 hit_rate가 흔들림 — 판정 전 `/metrics` 레코드 간격으로 간섭 확인. 레코드 매칭은 prompt_tokens 허용범위를 좁게(±20%) 잡아야 남의 요청을 집지 않는다.
+
+## spec 창 스윕 (2026-11-22, basalt-bench, draft-policy 결정화 이후 빌드)
+
+`spec-sweep.bat` — conv/struct/prose fixture, `--seed 1`, 엔진 플래그는 서버 config 미러링
+(expert-profile-save 제외), spec 0(무추측)/4/6/8. 원시 데이터:
+`D:\study\ai\adamant-exp\measure\20261122-102851-specsweep\`.
+
+| spec | conv tok_s | struct tok_s | prose tok_s | conv 수용률 | struct 수용률 | prose 수용률 |
+|---|---|---|---|---|---|---|
+| 0 | 100.7 | 104.2 | 102.5 | — | — | — |
+| 4 | 167.2 | 236.9 | 153.7 | 75.8% | 97.0% | 66.2% |
+| 6 | 166.8 | 274.3 | 150.7 | 71.5% | 96.6% | 62.9% |
+| 8 | 165.3 | **302.0** | **162.9** | 70.0% | 95.1% | 66.2% |
+
+결론:
+- 추측 이득 자체는 conv/prose ~1.6배, struct(반복적 JSON) ~2.9배.
+- **spec 8(엔진 기본) 유지** — 전 fixture에서 최고 또는 동률. conv만 4≈6≈8(±1%).
+- "정책이 T4 이하만 골라 상한 8은 헛비용" 가설은 **기각**: 새(비시간) 정책 아래 mean_t는
+  conv 3.4, struct 7.7까지 올라간다. 과거 서버 로그의 T4 상한은 timed 정책의 노이즈 산물.
