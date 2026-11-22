@@ -1,6 +1,7 @@
 # 성능 벤치 (2026-11-21, IQ4_XS / IQ3_XXS 비교)
 
-패치판 엔진(`bin\basalt.exe` ← plan_reserve+unbuffered, 원본 `basalt.exe.org`)으로 서빙 중인
+패치판 엔진(`basalt.exe` ← plan_reserve+unbuffered, 원본 `D:\study\ai\adamant\bin\basalt.org.exe` — 실행자
+확장을 위해 `basalt.exe.org`에서 이름을 바꾼 것, 실행 확인됨)으로 서빙 중인
 모델 실측. 방법론은 프로젝트 공식 `docs/benchmarks/strata-comparison.md` 준수:
 temp 0 / top_p 1 / seed 1 / **추론 off**(`reasoning_tokens: 0` 전 런 확인) / 512 토큰 캡 /
 워밍업 1회 제외 / 케이스별 nonce로 캐시 무효화(`reused: 0` 확인) / 코퍼스는 repo 문서
