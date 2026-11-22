@@ -25,7 +25,7 @@ if ($Help) {
     Say '  --help     this text plus the resolved commands'
     Say '  --dry-run  simulate: check every precondition, print each step, execute nothing'
     foreach ($v in @(@('orig',$orig), @('patch',$patch))) {
-        Say "engine: $repo> `"$($v[1])`" generate $($flags -join ' ')   [$($v[0]), stdout->tokens-$($v[0]).txt, stderr->log]"
+        Say "engine: $repo> `"$($v[1])`" $($flags -join ' ')   [$($v[0]), stdout->tokens-$($v[0]).txt, stderr->log]"
     }
     Say "diff : compare tokens-orig.txt tokens-patch.txt line by line"
     Say "out  : $out\ (tokens-*.txt, *.log, RESULT.txt)"
@@ -47,7 +47,7 @@ if ($DryRun) {
     Say 'dry-run: preconditions OK'
     Say "would create $out"
     foreach ($v in @(@('orig',$orig), @('patch',$patch))) {
-        Say "would run: cd $repo; `"$($v[1])`" generate $($flags -join ' ') > $out\tokens-$($v[0]).txt 2> $out\$($v[0]).log"
+        Say "would run: cd $repo; `"$($v[1])`" $($flags -join ' ') > $out\tokens-$($v[0]).txt 2> $out\$($v[0]).log"
     }
     Say 'would diff the two token files and write RESULT.txt'
     exit 0
@@ -62,7 +62,7 @@ foreach ($v in @(@('orig',$orig), @('patch',$patch))) {
     Say "run $name : loading + generating $maxNew greedy tokens (a few minutes)"
     $t0 = Get-Date
     Push-Location $repo
-    & $bin generate @flags 1> "$out\tokens-$name.txt" 2> "$out\$name.log"
+    & $bin @flags 1> "$out\tokens-$name.txt" 2> "$out\$name.log"
     $code[$name] = $LASTEXITCODE
     Pop-Location
     $n = @(Get-Content "$out\tokens-$name.txt" -ErrorAction SilentlyContinue).Count
