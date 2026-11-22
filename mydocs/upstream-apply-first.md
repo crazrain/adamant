@@ -66,6 +66,8 @@
 
 성능 실험이 아니라 **저비용 안정성 개선** (§12-가): RAM을 의도로 압박하는 조건(작은 `--ram-reserve-mib` + 큰 `--resident-budget-gib`)을 만들어 전후 비교. 성공 = 가드 미달/스왑 미재현 + RAM 티어 과감소 없음. ~4줄, 독립 커밋.
 
+**상태 (2026-11-22)**: **커밋 완료** — `078ac432` `load: plan the RAM tier against reserve plus post-plan host bytes` (브랜치 `mem/plan-reserve-unbuffered`, push됨). 실행 게이트 통과 근거: 2026-11-21 스트레스 실측(아래 2차 판독). 남은 것: 없음.
+
 **상태 (2026-11-21)**: 패치 작성·검증 완료 — `mydocs/patches/plan-reserve.patch` (4파일 52줄, adamant HEAD `git apply --check` 통과). 서버 worktree `D:\study\ai\adamant-exp`에 적용 후 **전체 빌드 통과** (`build-planreserve.log`, BUILD-EXIT=0, 실행 없음). 남은 것: 메모리 압박 전후 비교(실행 게이트 — 서버가 비는 시점 대기), 통과 시 독립 커밋.
 
 ## 작업 4 — Windows unbuffered
@@ -73,6 +75,8 @@
 TOP 4의 3순위이나 실행은 위 3건 뒤. 착수 전제: §12-나 검증 목록(비정렬 offset·마지막 partial block·동시 읽기·EOF·OVERLAPPED 이벤트 수명)을 테스트로 먼저 작성.
 
 **상태 (2026-11-21)**: 패치 작성·검증 완료 — `mydocs/patches/unbuffered-reads.patch` (3파일 197줄, adamant HEAD `git apply --check` 통과). 상류 `77ec04e5`(#296)의 Windows 실장(`ReOpenFile`/`CreateFileW` + `FILE_FLAG_NO_BUFFERING|OVERLAPPED`, `direct_fds` 추적, 읽기마다 이벤트/절대오프셋 overlapped `pread`, `close_fd` 분류 해제)을 adamant `file.cpp` 구조에 어댑션. §12-나 검증은 상류 테스트 `test_unbuffered_descriptor()`(8 동시 리더·short final sector·EOF 초과·비정렬 offset/size 거부·버퍼드 재사용, fd/path 양 경로)를 `tests/platform/direct_file_async.cpp`에 함께 이식 — 그 테스트가 곧 실행 게이트. 서버 worktree에 `plan_reserve`와 함께 적용, **컴파일 검증 통과** (2026-11-21: 구현부 전체 빌드 BUILD-EXIT=0 + `-DBUILD_TESTING=ON` 후 `direct_file_async_test.exe` 빌드 성공). **실행 검증 통과** (2026-11-21: 서버 서빙 중 실행 — CPU 파일 I/O 전용으로 VRAM 0·RAM 수십 MB, 자유 RAM 19GB 확인 후 진행. `direct_file_async_test.exe` TEST-EXIT=0, `check()`는 실패 시 throw이므로 전 체크 통과 확정 — 동시 리더·short final sector·EOF 초과·비정렬 거부·버퍼드 재사용, fd/path 양 경로). 남은 것: 대형 팩 로딩에서의 실측 이득(Cold/Warm 로딩 시간·Peak RAM)은 엔진 실행 게이트 — 서버가 비는 시점 대기.
+
+**상태 (2026-11-22)**: **커밋 완료** — `8577a94f` `platform: unbuffered reads on Windows` (같은 브랜치 `mem/plan-reserve-unbuffered`, push됨; 테스트 포함). 엔진 실측 통과(2차 판독: 읽기 2.30→4.91 GB/s, 로딩 35→25s). 남은 것: 일반 모드 VRAM +246MiB·WS +3GB 단일표본 재현 확인, 대형 팩 Cold/Warm 로딩·Peak RAM 공식 측정 — 회귀 확인 성격으로 커밋 후 진행.
 
 ## 하네스 규칙 (GPT 지시: 자동화에 시간 쓰지 말 것)
 
