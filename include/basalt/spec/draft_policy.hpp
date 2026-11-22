@@ -12,7 +12,9 @@
 //
 // and takes the lookup window only when its best E/cost beats the MTP's by `margin`. Costs are the measured round
 // times per window size (EMA; sizes not seen yet are scaled from seen ones by a prior shape), so the policy adapts
-// to the machine and the context length. It only chooses which drafts to verify: the output is unchanged.
+// to the machine and the context length. With `timed` false the round times are not read at all: every round costs
+// the prior shape of its size, so the picks follow the drafts' outcomes alone - the same tokens give the same
+// windows on every run. It only chooses which drafts to verify: the output is unchanged.
 #pragma once
 
 #include <array>
@@ -24,7 +26,7 @@ public:
     static constexpr int kMaxT = 8;
     static constexpr int kBuckets = 4;
 
-    explicit DraftPolicy(int max_t, double margin = 0.03);
+    explicit DraftPolicy(int max_t, double margin = 0.03, bool timed = true);
 
     struct Pick {
         bool lookup = false;
@@ -44,6 +46,7 @@ private:
 
     int max_t_;
     double margin_;
+    bool timed_;
     std::array<double, kMaxT + 1> cost_{}, cost_n_{};      // round ms by window size
     std::array<double, kMaxT + 1> mtp_tok_{}, mtp_n_{};    // tokens committed by MTP windows of that size
     std::array<double, kBuckets> ok_{}, bad_{};            // lookup drafts accepted / windows cut short, decayed
