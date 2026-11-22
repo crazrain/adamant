@@ -208,7 +208,7 @@ int QfnRuntime::capture_windows() {
 
     rounds = 0;
     sfx.emplace(std::max(1, o.suffix_draft), 64, (size_t) o.max_context + 4096);
-    policy.emplace(S);   // MTP or lookup window, learned over the whole process
+    policy.emplace(S, 0.03, false);   // MTP or lookup window, learned over the whole process
     // The vision path (--vision): GENI <max_new> <embeddings file> <id,id,...> carries images.  The file is one
     // or more basalt-vision records (int32 'SVE1', n, nx, ny, n_embd, then n x n_embd floats) in prompt order;
     // each image's rows go to its run of <|image_pad|> tokens, whose M-RoPE positions are mtmd's: t = p,
