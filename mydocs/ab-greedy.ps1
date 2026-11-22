@@ -12,7 +12,7 @@ $pack  = "$repo\models\Qwen3.8-FN-UD-IQ3_XXS.basalt"
 $ids   = "$repo\data\bench\conv.ids"                    # pre-tokenized chat prompt (the bench fixture)
 $prof  = "$repo\data\profiles\my-iq3xxs.bin"            # same placement on both sides; read-only, no -save
 $maxNew = 256
-$flags = @('--model',$pack,'--tokens-file',$ids,'--max-new',"$maxNew",'--spec','0','--greedy',
+$flags = @('--model',$pack,'--tokens-file',$ids,'--max-new',"$maxNew",'--spec','4','--prefill','32768','--greedy',
           '--max-context','262144','--kv','int8','--kv-resident','32768','--expert-profile',$prof,'--gpu','0')
 $ts    = Get-Date -Format 'yyyyMMdd-HHmmss'
 $out   = "$root\measure\$ts-abgreedy"
@@ -74,13 +74,23 @@ $detail = ''
 if ($code['orig'] -ne 0 -or $code['patch'] -ne 0) {
     $detail = "engine exit codes orig=$($code['orig']) patch=$($code['patch']) - see the .log files"
 } else {
-    $a = @(Get-Content "$out\tokens-orig.txt"); $b = @(Get-Content "$out\tokens-patch.txt")
-    if ($a.Count -ne $b.Count) { $detail = "length differs: orig $($a.Count) vs patch $($b.Count)" }
+    # stdout carries timing stats that differ run to run; only the 'output :' line holds the generated ids.
+    $oa = (Get-Content "$out\tokens-orig.txt"  | Select-String -Pattern '^output\s*:' | Select-Object -First 1).Line
+    $ob = (Get-Content "$out\tokens-patch.txt" | Select-String -Pattern '^output\s*:' | Select-Object -First 1).Line
+    $pa = (Get-Content "$out\tokens-orig.txt"  | Select-String -Pattern '^prompt\s*:'  | Select-Object -First 1).Line
+    $pb = (Get-Content "$out\tokens-patch.txt" | Select-String -Pattern '^prompt\s*:'  | Select-Object -First 1).Line
+    if (-not $oa -or -not $ob) { $detail = 'no "output :" line in one of the runs - see the .log files' }
+    elseif ($pa -ne $pb)        { $detail = 'prompt lines differ - the two runs did not get the same input' }
     else {
-        $bad = -1
-        for ($i = 0; $i -lt $a.Count; $i++) { if ($a[$i] -ne $b[$i]) { $bad = $i; break } }
-        if ($bad -lt 0) { $verdict = 'PASS'; $detail = "$($a.Count) tokens identical (greedy, --spec 0)" }
-        else { $detail = "first mismatch at token $bad : orig '$($a[$bad])' vs patch '$($b[$bad])'" }
+        $a = ($oa -replace '^output\s*:','').Trim() -split '\s+'
+        $b = ($ob -replace '^output\s*:','').Trim() -split '\s+'
+        if ($a.Count -ne $b.Count) { $detail = "length differs: orig $($a.Count) vs patch $($b.Count)" }
+        else {
+            $bad = -1
+            for ($i = 0; $i -lt $a.Count; $i++) { if ($a[$i] -ne $b[$i]) { $bad = $i; break } }
+            if ($bad -lt 0) { $verdict = 'PASS'; $detail = "$($a.Count) tokens identical (greedy, --spec 4)" }
+            else { $detail = "first mismatch at token $bad : orig '$($a[$bad])' vs patch '$($b[$bad])'" }
+        }
     }
 }
 Say "$verdict : $detail"
